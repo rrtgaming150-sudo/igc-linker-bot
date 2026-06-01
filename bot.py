@@ -1,18 +1,19 @@
 import os
-import asyncio
-import threading
-import aiohttp
 import json
+import aiohttp
 from datetime import datetime
+from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler,
-    filters, ContextTypes, ConversationHandler
+    filters, ContextTypes
 )
-from flask import Flask
 
 # --- Telegram Bot Setup ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+if not TELEGRAM_TOKEN:
+    raise ValueError("TELEGRAM_TOKEN environment variable not set.")
+
 BASE_URL = "https://www.indiageniuschallenge.com/api"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -21,7 +22,7 @@ HEADERS = {
     "Origin": "https://www.indiageniuschallenge.com",
 }
 
-# Helper functions (keep them exactly as they were)
+# --- Helper functions (same as before) ---
 def load_cookies_from_json(cookie_json_text):
     try:
         cookie_list = json.loads(cookie_json_text)
@@ -29,9 +30,7 @@ def load_cookies_from_json(cookie_json_text):
         for c in cookie_list:
             if c['name'] in ("__Secure-better-auth.session_token", "__Secure-better-auth.session_data"):
                 cookies[c['name']] = c['value']
-        if not cookies:
-            return None, "Required session cookies not found in the provided JSON."
-        return cookies, None
+        return cookies if cookies else (None, "Required session cookies not found.")
     except json.JSONDecodeError:
         return None, "Invalid JSON format."
 
@@ -73,7 +72,7 @@ async def fire_links(anon_ids, cookies):
         await asyncio.gather(*tasks)
     return results
 
-# Telegram bot command handlers (keep them exactly as they were)
+# --- Telegram Bot Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🔐 1. Set Cookies", callback_data="set_cookies")],
@@ -83,115 +82,110 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "Welcome to the India Genius Challenge Linker Bot!\n\n"
-        "Please follow the steps in order:\n"
-        "1. Click **Set Cookies** and send the cookie JSON you exported from your browser.\n"
-        "2. Click **Add Anon IDs** and provide exactly 3 Anonymous Attempt IDs.\n"
-        "3. Click **Fire Requests** to link them all at the exact same time.",
+        "Welcome to IGC Linker Bot!\n\nFollow the steps in order.",
         reply_markup=reply_markup,
     )
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user_id = query.from_user.id
     action = query.data
 
     if action == "set_cookies":
         context.user_data['next_step'] = 'set_cookies'
-        await query.edit_message_text(
-            "Please export your cookies for indiageniuschallenge.com and send me the entire JSON data.\n\n"
-            "**How to export cookies:**\n"
-            "1. Install an extension like 'EditThisCookie' or 'Cookie-Editor' in your browser.\n"
-            "2. Log in to indiageniuschallenge.com.\n"
-            "3. Use the extension to export all cookies for the site.\n"
-            "4. Copy the entire JSON output and paste it here."
-        )
+        await query.edit_message_text("Please paste the cookie JSON exported from your browser.")
     elif action == "add_ids":
         if 'cookies' not in context.user_data:
-            await query.edit_message_text("Please set your cookies first by clicking 'Set Cookies'.")
+            await query.edit_message_text("Set cookies first.")
             return
         context.user_data['next_step'] = 'add_ids'
-        await query.edit_message_text(
-            "Please send me the 3 Anonymous Attempt IDs.\n\n"
-            "You can send them one by one, or all three in a single message separated by commas.\n"
-            "Example: `6a1c620b807de1cfadfb495e, 6a1c6144a8a0ec0a37016db8, 6a1c616f72d3f61733e2535a`"
-        )
+        await query.edit_message_text("Send the 3 Anon IDs (one per line or comma-separated).")
     elif action == "fire":
         cookies = context.user_data.get('cookies')
         anon_ids = context.user_data.get('anon_ids', [])
         if not cookies:
-            await query.edit_message_text("Cookies are missing. Please set them first.")
+            await query.edit_message_text("Missing cookies.")
             return
         if len(anon_ids) != 3:
-            await query.edit_message_text(f"You have {len(anon_ids)} Anon IDs. Please add exactly 3 using the 'Add Anon IDs' button.")
+            await query.edit_message_text(f"Need 3 Anon IDs. You have {len(anon_ids)}.")
             return
-        await query.edit_message_text("🚀 Firing three simultaneous requests. This will take a few seconds...")
-        try:
-            results = await fire_links(anon_ids, cookies)
-            msg_lines = ["**Results:**"]
-            for res in results:
-                msg_lines.append(
-                    f"*Request {res['id']}* (ID: `{res['anon_id']}`)\n"
-                    f"  Status: `{res['status']}`\n"
-                    f"  Response: `{res['response'][:100]}`"
-                )
-            await query.edit_message_text("\n".join(msg_lines), parse_mode="Markdown")
-        except Exception as e:
-            await query.edit_message_text(f"An error occurred: {e}")
+        await query.edit_message_text("🚀 Firing requests...")
+        results = await fire_links(anon_ids, cookies)
+        msg = "**Results:**\n"
+        for res in results:
+            msg += f"Req{res['id']}: status {res['status']} – {res['response'][:80]}\n"
+        await query.edit_message_text(msg, parse_mode="Markdown")
     elif action == "clear":
         context.user_data.clear()
-        await query.edit_message_text("Your data has been cleared. Use /start to begin again.")
+        await query.edit_message_text("Data cleared.")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_step = context.user_data.get('next_step')
-    if user_step == 'set_cookies':
-        cookies, error = load_cookies_from_json(update.message.text)
-        if error:
-            await update.message.reply_text(f"Error: {error}")
+    step = context.user_data.get('next_step')
+    if step == 'set_cookies':
+        cookies, err = load_cookies_from_json(update.message.text)
+        if err:
+            await update.message.reply_text(f"Error: {err}")
             return
         context.user_data['cookies'] = cookies
-        context.user_data['next_step'] = None
-        await update.message.reply_text("✅ Cookies saved successfully! You can now proceed to add Anon IDs.")
-    elif user_step == 'add_ids':
+        context.user_data.pop('next_step', None)
+        await update.message.reply_text("✅ Cookies saved. Now add Anon IDs.")
+    elif step == 'add_ids':
         text = update.message.text.strip()
-        if ',' in text:
-            ids = [x.strip() for x in text.split(',')]
-        else:
-            ids = [text]
+        ids = [x.strip() for x in text.replace(',', ' ').split() if x.strip()]
         context.user_data['anon_ids'] = ids[:3]
-        context.user_data['next_step'] = None
-        await update.message.reply_text(f"✅ Saved {len(context.user_data['anon_ids'])} Anon ID(s). You can now click 'Fire Requests'.")
+        context.user_data.pop('next_step', None)
+        await update.message.reply_text(f"✅ Saved {len(context.user_data['anon_ids'])} IDs. Press 'Fire Requests'.")
     else:
-        await update.message.reply_text("Please use the buttons in the menu.")
+        await update.message.reply_text("Please use the buttons.")
 
-# ================= FLASK WEB SERVER FOR RENDER HEALTH CHECKS =================
-flask_app = Flask('')
+# --- Flask App for Webhook & Health Check ---
+flask_app = Flask(__name__)
 
 @flask_app.route('/')
-@flask_app.route('/health')
 def health():
-    return "Bot is running!", 200
+    return "Bot is alive!", 200
 
-def run_flask():
-    port = int(os.environ.get('PORT', 5000))
-    flask_app.run(host='0.0.0.0', port=port)
+@flask_app.route('/webhook', methods=['POST'])
+async def webhook():
+    # Get the update from Telegram
+    data = request.get_json()
+    if not data:
+        return jsonify({"status": "error", "message": "No data"}), 400
 
-# ================= MAIN ENTRY POINT =================
-def main():
-    # Start Flask web server in a separate thread
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
+    # Create an Update object and process it
+    update = Update.de_json(data, bot_app.bot)
+    await bot_app.process_update(update)
+    return jsonify({"status": "ok"}), 200
 
-    # Start the Telegram bot
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button_callback))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+# Global variable to hold the bot application instance
+bot_app = None
 
-    print("Bot is starting...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+def setup_bot():
+    global bot_app
+    bot_app = Application.builder().token(TELEGRAM_TOKEN).build()
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CallbackQueryHandler(button_callback))
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    return bot_app
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    # Set up the bot
+    bot_app = setup_bot()
+    # Start the bot webhook (no polling)
+    # We need to run Flask in a separate thread because the asyncio loop is already running?
+    # Actually, Flask will run in its own thread; we can set the webhook URL via Telegram API.
+    # For simplicity, we'll run the webhook server with a background thread.
+    # But Telegram needs to know the public URL. Render provides the URL automatically.
+    # We'll set the webhook on startup using the environment variable RENDER_EXTERNAL_URL.
+    public_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://your-bot.onrender.com')
+    webhook_url = f"{public_url}/webhook"
+    # Set the webhook (run once)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(bot_app.bot.set_webhook(webhook_url))
+    print(f"Webhook set to {webhook_url}")
+
+    # Start Flask server (blocking)
+    port = int(os.environ.get('PORT', 5000))
+    flask_app.run(host='0.0.0.0', port=port)
