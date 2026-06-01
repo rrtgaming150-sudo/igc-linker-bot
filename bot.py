@@ -12,7 +12,7 @@ from telegram.ext import (
 from flask import Flask
 
 # --- Telegram Bot Setup ---
-TELEGRAM_TOKEN = os.getenv("8989521653:AAGGnpq4bX_U4pQbTSjpdEZbjACUpD6jEnI")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 BASE_URL = "https://www.indiageniuschallenge.com/api"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
