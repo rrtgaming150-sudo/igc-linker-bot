@@ -1,20 +1,19 @@
+import os
 import asyncio
+import threading
 import aiohttp
 import json
-import logging
-import os
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler, MessageHandler,
+    filters, ContextTypes, ConversationHandler
+)
+from flask import Flask
 
-# --- Configuration ---
-# Replace with your Telegram Bot Token from @BotFather
-TELEGRAM_TOKEN = "8989521653:AAGGnpq4bX_U4pQbTSjpdEZbjACUpD6jEnI"
-
-# The base URL for the quiz API
+# --- Telegram Bot Setup ---
+TELEGRAM_TOKEN = os.getenv("8989521653:AAGGnpq4bX_U4pQbTSjpdEZbjACUpD6jEnI")
 BASE_URL = "https://www.indiageniuschallenge.com/api"
-
-# Standard headers used for API requests
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept": "application/json, text/plain, */*",
@@ -22,10 +21,8 @@ HEADERS = {
     "Origin": "https://www.indiageniuschallenge.com",
 }
 
-# --- Helper Functions ---
-
+# Helper functions (keep them exactly as they were)
 def load_cookies_from_json(cookie_json_text):
-    """Parses the user-provided cookie JSON and extracts the session cookies."""
     try:
         cookie_list = json.loads(cookie_json_text)
         cookies = {}
@@ -33,20 +30,15 @@ def load_cookies_from_json(cookie_json_text):
             if c['name'] in ("__Secure-better-auth.session_token", "__Secure-better-auth.session_data"):
                 cookies[c['name']] = c['value']
         if not cookies:
-            return None, "Required session cookies not found in the provided JSON. Make sure you've exported ALL cookies for the site."
+            return None, "Required session cookies not found in the provided JSON."
         return cookies, None
     except json.JSONDecodeError:
-        return None, "Invalid JSON format. Please make sure you've copied the entire cookie data correctly."
-
+        return None, "Invalid JSON format."
 
 async def fire_links(anon_ids, cookies):
-    """
-    Sends 3 parallel linkAnon requests using an asyncio event barrier.
-    This is the core function that was proven to work in our tests.
-    """
     results = []
     async def link_request(session, anon_id, idx, start_event):
-        await start_event.wait()  # Wait for the signal to fire
+        await start_event.wait()
         send_ns = datetime.now().timestamp() * 1_000_000
         req_cookies = cookies.copy()
         req_cookies['anon_attempt_id'] = anon_id
@@ -76,18 +68,13 @@ async def fire_links(anon_ids, cookies):
     async with aiohttp.ClientSession(connector=connector) as session:
         start_event = asyncio.Event()
         tasks = [link_request(session, anon_id, i+1, start_event) for i, anon_id in enumerate(anon_ids)]
-        # Small delay to ensure all tasks are ready
         await asyncio.sleep(0)
-        start_event.set()  # Release all tasks simultaneously
+        start_event.set()
         await asyncio.gather(*tasks)
-
     return results
 
-
-# --- Bot Command Handlers ---
-
+# Telegram bot command handlers (keep them exactly as they were)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Sends a welcome message with instructions and main menu buttons."""
     keyboard = [
         [InlineKeyboardButton("🔐 1. Set Cookies", callback_data="set_cookies")],
         [InlineKeyboardButton("➕ 2. Add Anon IDs", callback_data="add_ids")],
@@ -97,7 +84,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
         "Welcome to the India Genius Challenge Linker Bot!\n\n"
-        "This bot will help you link multiple Anonymous Attempt IDs to your account.\n\n"
         "Please follow the steps in order:\n"
         "1. Click **Set Cookies** and send the cookie JSON you exported from your browser.\n"
         "2. Click **Add Anon IDs** and provide exactly 3 Anonymous Attempt IDs.\n"
@@ -105,9 +91,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup,
     )
 
-
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles button presses from the main menu."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -145,7 +129,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🚀 Firing three simultaneous requests. This will take a few seconds...")
         try:
             results = await fire_links(anon_ids, cookies)
-            # Format results for display
             msg_lines = ["**Results:**"]
             for res in results:
                 msg_lines.append(
@@ -160,9 +143,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         await query.edit_message_text("Your data has been cleared. Use /start to begin again.")
 
-
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles text messages sent by the user (cookies or Anon IDs)."""
     user_step = context.user_data.get('next_step')
     if user_step == 'set_cookies':
         cookies, error = load_cookies_from_json(update.message.text)
@@ -178,25 +159,39 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ids = [x.strip() for x in text.split(',')]
         else:
             ids = [text]
-        # Keep only the first 3 IDs
         context.user_data['anon_ids'] = ids[:3]
         context.user_data['next_step'] = None
         await update.message.reply_text(f"✅ Saved {len(context.user_data['anon_ids'])} Anon ID(s). You can now click 'Fire Requests'.")
     else:
         await update.message.reply_text("Please use the buttons in the menu.")
 
+# ================= FLASK WEB SERVER FOR RENDER HEALTH CHECKS =================
+flask_app = Flask('')
 
+@flask_app.route('/')
+@flask_app.route('/health')
+def health():
+    return "Bot is running!", 200
+
+def run_flask():
+    port = int(os.environ.get('PORT', 5000))
+    flask_app.run(host='0.0.0.0', port=port)
+
+# ================= MAIN ENTRY POINT =================
 def main():
-    """Start the bot."""
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    # Start Flask web server in a separate thread
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
 
+    # Start the Telegram bot
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    print("Bot is polling...")
+    print("Bot is starting...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
-
 
 if __name__ == "__main__":
     main()
